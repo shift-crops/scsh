@@ -3,7 +3,7 @@
 #include <string.h>
 #include "include/history.h"
 
-struct hist_cmd* hist_ptr;
+struct hist_cmd *hist_ptr;
 char hist_file[BUF_SIZE];
 
 void history_init(char *fname){

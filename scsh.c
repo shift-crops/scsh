@@ -2,37 +2,33 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
-#include <fcntl.h>
 #include <signal.h>
+#include <pwd.h>
+#include <getopt.h>
 #include "include/scsh.h"
 #include "include/input.h"
+#include "include/parse.h"
 #include "include/bg_task.h"
 #include "include/history.h"
 
 #define CURSOL
 
-/*
-<line> ::= {<cmd> [';' | '||' | '&&' | '|' | '&']}* <cmd>
-<cmd>  ::= <fact> {['<'|'>'|'2>']? <fact>}*
-<fact> ::= STR | ''' STR ''' | '"' <fact> '"' | '`' <line> '`' | '&' NUM
-*/
-
-char *ptr;
-char pwd[BUF_SIZE];
+char cwd[BUF_SIZE];
 
 __attribute__((constructor))
 init(){
 	signal (SIGTTIN, SIG_IGN);
 	signal (SIGTTOU, SIG_IGN);
-	signal (SIGTSTP, sig2child);
-	signal (SIGINT,  sig2child);
-	signal (SIGCHLD, wait_child);
+	signal (SIGTSTP, sig_child);
+	signal (SIGINT,  sig_child);
+	signal (SIGCHLD, sig_child);
 
 	if(dup2(STDIN_FILENO, BACKUP_FILENO)<0){
 		perror("dup2");
 		exit(-1);
 	}
 
+	input_init();
 	bg_task_init();
 	history_init(".scsh_history");
 }
@@ -41,23 +37,87 @@ __attribute__((destructor))
 fini(){
 	bg_task_fini();
 	history_fini();
-	dprintf(STDOUT_FILENO, "exit\n");
 }
 
 int main(int argc, char *argv[]){
-	if(argc<2){
-		char user[BUF_SIZE], host[BUF_SIZE], p;
+	char opt;
+	char *msg = "scsh, version %s (Compiled at %s %s)\n", *version="1.01";
 
-		getlogin_r(user, sizeof(user));
+	struct option long_options[] = {
+	        {"help",     no_argument, NULL, 'h'},
+	        {"version",  no_argument, NULL, 'v'},
+	        {0, 0, 0, 0}};
+
+	switch(getopt_long(argc, argv, "-c:hv", long_options, NULL)){
+		case -1:
+			shell(NULL);
+			break;
+		case 'c':
+			line(optarg, NULL);
+			break;
+		case 'v':
+			dprintf(STDOUT_FILENO, msg, version, __DATE__, __TIME__);
+
+			msg =	"Copyright (C) %s ShiftCrops\n"
+				"\n"
+				"This software is released under the MIT License.\n"
+				"http://opensource.org/licenses/mit-license.php\n"
+				"\n";
+			dprintf(STDOUT_FILENO, msg, "2016");
+			break;
+		case 'h':
+		case '?':
+			dprintf(STDOUT_FILENO, msg, version, __DATE__, __TIME__);
+
+			msg =	"Usage:"
+				"\t%1$s [option]...\n"
+				"\t%1$s script-file...\n"
+				"\n"
+				"Options:\n"
+				"\t-c command\n"
+				"\t\texecute command\n"
+				"\t-v, --version\n"
+				"\t\tshow version information\n"
+				"\t-h, --help\n"
+				"\t\tshow this help\n"
+				"\n";
+			dprintf(STDOUT_FILENO, msg, argv[0]);
+			break;
+		default:
+			shell(optarg);
+	}
+}
+
+void shell(char *fname){
+	if(fname){
+		FILE *fp;
+		char buf[BUF_SIZE]={0};
+
+		if(fp = fopen(fname, "r")){
+			while(fgets(buf, sizeof(buf), fp))
+				line(buf, NULL);
+			fclose(fp);
+		}
+		else
+			perror(fname);
+	}
+	else{
+		char user[BUF_SIZE]={0}, host[BUF_SIZE]={0}, p;
+		struct passwd *pw;
+		uid_t uid;
+
+		uid = geteuid();
+		if(pw = getpwuid(uid))
+			strncpy(user, pw->pw_name, sizeof(user));
+		//getlogin_r(user, sizeof(user));
 		gethostname(host, sizeof(host));
-		getcwd(pwd, sizeof(pwd));
-		p = geteuid() ? '$' : '#';
+		getcwd(cwd, sizeof(cwd));
+		p = uid ? '$' : '#';
 
 		while(true){
 			char buf[BUF_SIZE]={0}, prompt[BUF_SIZE], term;
-			ptr = buf;
 
-			snprintf(prompt, sizeof(prompt), "%s@%s:%s%c ", user, host, pwd, p);
+			snprintf(prompt, sizeof(prompt), "%s@%s:%s%c ", user, host, cwd, p);
 #ifdef CURSOL
 			do{
 				dprintf(STDOUT_FILENO, "\r\x1b[K%s%s", prompt, buf);
@@ -67,6 +127,9 @@ int main(int argc, char *argv[]){
 						break;
 					case DOWN:
 						history_forward(buf, sizeof(buf));
+						break;
+					case TAB:
+						dprintf(STDERR_FILENO, "\nCompletion is not implemented.\n");
 						break;
 					case ENTER:
 						history_add(buf, false);
@@ -80,405 +143,10 @@ int main(int argc, char *argv[]){
 			dprintf(STDOUT_FILENO, "%s", prompt);
 			fgets(buf, sizeof(buf),stdin);
 #endif
-			line(NULL);
+			line(buf, NULL);
 		}
+		dprintf(STDOUT_FILENO, "exit\n");
 	}
-	else{
-		ptr = argv[1];
-		line(NULL);
-	}
-}
-
-void line(char *buf){
-	int status;
-	bool cont;
-	pid_t cpid, cpgrp;
-	struct bg_task *task;
-	char *b_ptr = ptr;
-
-	for(cpgrp=0, cont = true; cont;){
-		char *cmd;
-		cmd = strdup(ptr);
-		cmd = strtok(cmd, ";&|");
-
-		cpid = command();
-		if(!cpid)	continue;
-		else if(cpid<0) break;
-
-		if(!cpgrp){
-			cpgrp = cpid;
-			tcsetpgrp(BACKUP_FILENO, cpgrp);
-		}
-		setpgid(cpid, cpgrp);
-
-		switch(get_token(NULL)){
-			case SEMICOL:
-				waitpid(cpid, &status, WUNTRACED);
-				break;
-			case AND:
-				if(get_token(NULL)!=STR)
-					error(__func__);
-				else
-					unget_token();
-
-				waitpid(cpid, &status, WUNTRACED);
-				if(!WIFEXITED(status) || WEXITSTATUS(status))
-					cont = false;
-				break;
-			case OR:
-				if(get_token(NULL)!=STR)
-					error(__func__);
-				else
-					unget_token();
-
-				waitpid(cpid, &status, WUNTRACED);
-				if(WIFEXITED(status) && !WEXITSTATUS(status))
-					cont = false;
-				break;
-			case PIPE:
-				if(get_token(NULL)!=STR && !buf)
-					error(__func__);
-				else
-					unget_token();
-
-				break;
-			case BG:
-				task = bg_task_add(cpid, cpgrp, cmd, true);
-				dprintf(STDERR_FILENO, "[%d] %d\n", task->job_id, cpid);
-				break;
-			default:
-				waitpid(cpid, &status, WUNTRACED);
-				cont = false;
-		}
-		free(cmd);
-	}
-
-	if(buf){
-		int len;
-		memset(buf, 0, BUF_SIZE);
-		read(STDIN_FILENO, buf, BUF_SIZE);
-
-		len = strlen(buf);
-		if(buf[len-1]=='\n')
-			buf[len-1]='\0';
-		//dprintf(STDERR_FILENO, "arg : %s\n", buf);
-	}
-
-/*
-	if(dup2(BACKUP_FILENO, STDIN_FILENO)<0){
-		perror("dup2");
-		exit(-1);
-	}
-*/
-	dup2(BACKUP_FILENO, STDIN_FILENO);
-	tcsetpgrp(BACKUP_FILENO, getpgrp());
-
-	if(WIFSTOPPED(status)){
-		struct bg_task *task;
-		task = bg_task_add(cpid, cpgrp, b_ptr, false);
-		dprintf(STDERR_FILENO, "[%d] Stopped\t\t%s\n", task->job_id, task->cmd);
-	}
-}
-
-//return value <0:error, 0:buil_in, >0:normal
-pid_t command(void){
-	int  i;
-	int  argc, fd, pfd[2];
-	bool cont, next_pipe;
-	char buf[BUF_SIZE], token;
-	char *b_ptr,**argv, **b_argv, *p;
-	pid_t pid;
-
-	b_ptr = ptr;
-
-	token = get_token(NULL);
-	if(token==EOL)
-		return -1;
-	else if(token!=STR && token!=SQUART && token!=DQUART){
-		error(__func__);
-		return -1;
-	}
-
-	unget_token();
-	factor(buf, NULL);
-	if(built_in(buf))
-		return 0;
-
-	for(argc=1, cont=true; cont;){
-		switch(token = get_token(NULL)){
-			case STR:
-			case SQUART:
-			case DQUART:
-			case BQUART:
-				unget_token();
-				argc++;
-			case STDIN:
-			case STDOUT:
-			case APPEND:
-			case STDERR:
-				factor(NULL, NULL);
-				break;
-			default:
-				unget_token();
-				cont = false;
-		}
-	}
-	if(next_pipe = (token==PIPE))
-		pipe(pfd);
-
-	/*  parent  */
-	if((pid = fork())>0){
-		if(next_pipe){
-			dup2(pfd[0], STDIN_FILENO);
-			close(pfd[0]);
-			close(pfd[1]);
-		}
-		return pid;
-	}
-	/*  error  */
-	else if(pid<0){
-		perror("fork");
-		exit(-1);
-	}
-
-	/*  child  */
-	if(next_pipe){
-		dup2(pfd[1], STDOUT_FILENO);
-		close(pfd[0]);
-		close(pfd[1]);
-	}
-	close(BACKUP_FILENO);
-
-	argv = (char**)malloc(sizeof(char*)*(argc+1));
-	ptr  = b_ptr;
-	for(i=0, cont=true; cont;){
-		switch(get_token(NULL)){
-			case STDIN:
-				factor(buf, NULL);
-				close(STDIN_FILENO);
-				if(open(buf, O_RDONLY)<0){
-					perror(buf);
-					_exit(-1);
-				}
-				break;
-			case STDOUT:
-				close(STDOUT_FILENO);
-				if(factor(buf, &fd)==STR){
-					unlink(buf);
-					if(open(buf, O_WRONLY | O_CREAT, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH)<0){
-						perror(buf);
-						_exit(-1);
-					}
-				}
-				else
-					dup(fd);
-				break;
-			case APPEND:
-				close(STDOUT_FILENO);
-				if(factor(buf, &fd)==STR){
-					if(open(buf, O_WRONLY | O_CREAT | O_APPEND, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH)<0){
-						perror(buf);
-						_exit(-1);
-					}
-				}
-				else
-					dup(fd);
-				break;
-			case STDERR:
-				close(STDERR_FILENO);
-				if(factor(buf, &fd)==STR){
-					unlink(buf);
-					if(open(buf, O_WRONLY | O_CREAT, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH)<0){
-						perror(buf);
-						_exit(-1);
-					}
-				}
-				else
-					dup(fd);
-				break;
-			case STR:
-			case SQUART:
-			case DQUART:
-				unget_token();
-				factor(buf, NULL);
-				argv[i++]=strdup(buf);
-				break;
-			case BQUART:
-				unget_token();
-				factor(buf, NULL);
-
-				for(p=buf; *p; p++)
-					if(*p=='\n') argc++;
-
-				/*
-				b_argv = argv;
-				argv = (char**)malloc(sizeof(char*)*(argc+1));
-				memcpy(argv, b_argv, sizeof(char*)*i);
-				free(b_argv);
-				*/
-				argv = (char**)realloc(argv, sizeof(char*)*(argc+1));
-
-				argv[i++] = strdup(strtok(buf, "\n"));
-				while(p=strtok(NULL, "\n"))
-					argv[i++] = strdup(p);
-				break;
-			default:
-				unget_token();
-				cont = false;
-		}
-	}		
-	argv[i]=NULL;
-
-	/*
-	for(i=0; argv[i]; i++)
-		dprintf(STDERR_FILENO, "argv[%d]: %s\n", i, argv[i]);
-	*/
-
-	execvp(argv[0],argv);
-	perror(argv[0]);
-	_exit(-1);
-}
-
-int factor(char *p, int *v){
-	char c;
-	int i;
-	char *b_ptr;
-	char buf[BUF_SIZE];
-
-	while(get_token(NULL)==SPACE);
-	unget_token();
-
-	switch(get_token(&c)){
-		case EOL:
-			break;
-		case STR:
-			unget_token();
-			for(i=0; i<BUF_SIZE-1 && get_token(&c)==STR; i++)
-				if(p)
-					*(p++)=c;
-			unget_token();
-			break;
-		case SQUART:
-			for(i=0; i<BUF_SIZE-1 && get_token(&c)!=SQUART; i++)
-				if(p)
-					*(p++)=c;
-			break;
-		case DQUART:
-			for(i=0; i<BUF_SIZE-1 && get_token(&c)!=DQUART; i++)
-				if(p){
-					if(c=='`'){
-						unget_token();
-						factor(buf, NULL);
-
-						strncpy(p, buf, BUF_SIZE-i);
-						p += strlen(p);
-					}
-					else
-						*(p++)=c;
-				}
-			break;
-		case BQUART:
-			for(i=0; i<sizeof(buf)-2 && get_token(&c)!=BQUART; i++)
-				buf[i]=c;
-			buf[i]='|';
-			buf[i+1]='\0';
-
-			if(p){
-				b_ptr = ptr;
-				ptr = buf;
-				line(p);
-				ptr = b_ptr;
-			}
-			return STR;
-		case FD:
-			b_ptr = ptr;
-			for(i=0; i<BUF_SIZE && get_token(&c)==STR; i++)
-				if(c<'0' || c>'9'){
-					ptr = b_ptr;
-					factor(p, NULL);
-					return -1;
-				}
-			unget_token();
-			if(v)
-				*v = atoi(b_ptr);
-			return NUM;
-		default:
-			unget_token();
-	}
-
-	if(p)
-		*p='\0';
-	return STR;
-}
-
-char get_token(char *c){
-	if(c)
-		*c = *ptr;
-	else
-		while(*ptr==' ' || *ptr=='\t')
-			ptr++;
-
-	switch(*(ptr++)){
-		case EOF:
-		case '\0':
-		case '\n':	return EOL;
-		case ';':	return SEMICOL;
-		case '|':
-			if(*ptr=='|'){
-				ptr++;
-				return OR;
-			}
-			else
-				return PIPE;
-		case '&':
-			if(*ptr=='&'){
-				ptr++;
-				return AND;
-			}
-			else if(*ptr>='0' && *ptr<='9')
-				return FD;
-			else
-				return BG;
-		case '>':
-			if(*ptr=='>'){
-				ptr++;
-				return APPEND;
-			}
-			else
-				return STDOUT;
-		case '<':	return STDIN;
-		case '1':
-			if(*ptr=='>'){
-				ptr++;
-				return STDOUT;
-			}
-			else
-				return STR;
-		case '2':
-			if(*ptr=='>'){
-				ptr++;
-				return STDERR;
-			}
-			else
-				return STR;
-		case '\'':	return SQUART;
-		case '"':	return DQUART;
-		case '`':	return BQUART;
-		case ' ':
-		case '\t':	return SPACE;
-		default:	return STR;
-	}
-}
-
-void unget_token(void){
-	ptr--;
-
-	if((*(ptr-1)=='|' && *ptr=='|') || (*(ptr-1)=='&' && *ptr=='&') || (*(ptr-1)=='>' && *ptr=='>') || (*(ptr-1)=='1' && *ptr=='>') || (*(ptr-1)=='2' && *ptr=='>'))
-		ptr--;
-}
-
-void error(const char *sym){
-	dprintf(STDERR_FILENO, "Error in '%s'\n", sym);
 }
 
 bool built_in(const char *cmd){
@@ -488,7 +156,7 @@ bool built_in(const char *cmd){
 
 	token = get_token(NULL);
 	unget_token();
-	if(token==STR)
+	if(token==STR || token==SQUART || token==DQUART)
 		factor(buf, NULL);
 
 	if(!(strcmp(cmd, "fg")&&strcmp(cmd, "bg")&&strcmp(cmd, "stop"))){
@@ -501,7 +169,6 @@ bool built_in(const char *cmd){
 	}
 
 	if(!strcmp(cmd, "jobs")){
-		struct bg_task *task;
 		bg_task_for_each(task)
 			dprintf(STDERR_FILENO, "[%d] %s\t\t%s\n", task->job_id, task->running ? "Running":"Stopped", task->cmd);
 		return true;
@@ -556,9 +223,9 @@ bool built_in(const char *cmd){
 			chdir_ret = chdir(buf);
 
 		if(!chdir_ret){
-			setenv("OLDPWD", pwd, true);
-			getcwd(pwd, sizeof(pwd));
-			setenv("PWD", pwd, true);
+			setenv("OLDPWD", cwd, true);
+			getcwd(cwd, sizeof(cwd));
+			setenv("PWD", cwd, true);
 		}
 		return true;
 	}
@@ -608,37 +275,52 @@ bool built_in(const char *cmd){
 	return false;
 }
 
-void sig2child(int signo){}
-
-void wait_child(int signo){
+void sig_child(int signo){
 	int status;
 	pid_t pid;
 
+	//dprintf(STDERR_FILENO, "%s(%d)\n", __func__, signo);
 	while((pid = waitpid(-1, &status, WNOHANG))>0){
 		struct bg_task *task;
 
 		//dprintf(STDERR_FILENO, "pid:%d status:%d\n", pid, status);
 		if(task=bg_task_entry_bypid(pid)){
-			char *stat = NULL;
+			char *stat_msg = signal_status(status);
 
-			if(WIFEXITED(status))
-				stat = "Done";
-			else if(WIFSIGNALED(status))
-				switch(WTERMSIG(status)){
-					case SIGHUP:	stat = "Clean tidyup";	break;
-					case SIGINT:	stat = "Interrupt";	break;
-					case SIGQUIT:	stat = "Quit";		break;
-					case SIGABRT:	stat = "Abort";		break;
-					case SIGKILL:	stat = "Die Now";	break;
-					case SIGALRM:	stat = "Alarm Clock";	break;
-					case SIGTERM:	stat = "Terminated";	break;
-					default:	stat = "Signal";
-				}
-
-			if(stat){
-				dprintf(STDERR_FILENO, "\n[%d] %s\t\t%s\n", task->job_id, stat, task->cmd);
+			if(stat_msg){
+				dprintf(STDERR_FILENO, "\n[%d] %s\t\t%s\n", task->job_id, stat_msg, task->cmd);
 				bg_task_remove(task);
 			}
 		}
 	}
+}
+
+void wait_child(pid_t pid, int *p_status){
+	char *stat_msg;
+
+	waitpid(pid, p_status, WUNTRACED);
+
+	stat_msg = signal_status(*p_status);
+	if(!WIFEXITED(*p_status) && stat_msg)
+		dprintf(STDERR_FILENO, "%s\n", stat_msg);
+}
+
+char* signal_status(int status){
+	char *stat_msg = NULL;
+
+	if(WIFEXITED(status))
+		stat_msg = "Done";
+	else if(WIFSIGNALED(status))
+		switch(WTERMSIG(status)){
+			case SIGHUP:	stat_msg = "Hangup";		break;
+			case SIGINT:	stat_msg = "Interrupt";		break;
+			case SIGQUIT:	stat_msg = "Quit";		break;
+			case SIGABRT:	stat_msg = "Abort";		break;
+			case SIGKILL:	stat_msg = "Die Now";		break;
+			case SIGALRM:	stat_msg = "Alarm Clock";	break;
+			case SIGTERM:	stat_msg = "Terminated";	break;
+			default:	stat_msg = "Signal";
+		}
+
+	return stat_msg;
 }
