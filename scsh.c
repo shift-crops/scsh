@@ -6,6 +6,7 @@
 #include <pwd.h>
 #include <getopt.h>
 #include "include/scsh.h"
+#include "include/signal.h"
 #include "include/input.h"
 #include "include/parse.h"
 #include "include/bg_task.h"
@@ -17,17 +18,12 @@ char cwd[BUF_SIZE];
 
 __attribute__((constructor))
 init(){
-	signal (SIGTTIN, SIG_IGN);
-	signal (SIGTTOU, SIG_IGN);
-	signal (SIGTSTP, sig_child);
-	signal (SIGINT,  sig_child);
-	signal (SIGCHLD, sig_child);
-
 	if(dup2(STDIN_FILENO, BACKUP_FILENO)<0){
 		perror("dup2");
 		exit(-1);
 	}
 
+	sig_init();
 	input_init();
 	bg_task_init();
 	history_init(".scsh_history");
@@ -41,7 +37,7 @@ fini(){
 
 int main(int argc, char *argv[]){
 	char opt;
-	char *msg = "scsh, version %s (Compiled at %s %s)\n", *version="1.01";
+	char *msg = "scsh, version %s (Compiled at %s %s)\n", *version="1.02";
 
 	struct option long_options[] = {
 	        {"help",     no_argument, NULL, 'h'},
@@ -50,10 +46,10 @@ int main(int argc, char *argv[]){
 
 	switch(getopt_long(argc, argv, "-c:hv", long_options, NULL)){
 		case -1:
-			shell(NULL);
+			shell();
 			break;
 		case 'c':
-			line(optarg, NULL);
+			line(optarg, NULL, 0);
 			break;
 		case 'v':
 			dprintf(STDOUT_FILENO, msg, version, __DATE__, __TIME__);
@@ -84,69 +80,68 @@ int main(int argc, char *argv[]){
 			dprintf(STDOUT_FILENO, msg, argv[0]);
 			break;
 		default:
-			shell(optarg);
+			batch(optarg);
 	}
 }
 
-void shell(char *fname){
-	if(fname){
-		FILE *fp;
-		char buf[BUF_SIZE]={0};
+void shell(void){
+	char user[BUF_SIZE]={0}, host[BUF_SIZE]={0}, p;
+	struct passwd *pw;
+	uid_t uid;
 
-		if(fp = fopen(fname, "r")){
-			while(fgets(buf, sizeof(buf), fp))
-				line(buf, NULL);
-			fclose(fp);
-		}
-		else
-			perror(fname);
-	}
-	else{
-		char user[BUF_SIZE]={0}, host[BUF_SIZE]={0}, p;
-		struct passwd *pw;
-		uid_t uid;
+	uid = geteuid();
+	if(pw = getpwuid(uid))
+		strncpy(user, pw->pw_name, sizeof(user));
+	//getlogin_r(user, sizeof(user));
+	gethostname(host, sizeof(host));
+	getcwd(cwd, sizeof(cwd));
+	p = uid ? '$' : '#';
 
-		uid = geteuid();
-		if(pw = getpwuid(uid))
-			strncpy(user, pw->pw_name, sizeof(user));
-		//getlogin_r(user, sizeof(user));
-		gethostname(host, sizeof(host));
-		getcwd(cwd, sizeof(cwd));
-		p = uid ? '$' : '#';
+	while(true){
+		char buf[BUF_SIZE]={0}, prompt[BUF_SIZE], term;
 
-		while(true){
-			char buf[BUF_SIZE]={0}, prompt[BUF_SIZE], term;
-
-			snprintf(prompt, sizeof(prompt), "%s@%s:%s%c ", user, host, cwd, p);
+		snprintf(prompt, sizeof(prompt), "%s@%s:%s%c ", user, host, cwd, p);
 #ifdef CURSOL
-			do{
-				dprintf(STDOUT_FILENO, "\r\x1b[K%s%s", prompt, buf);
-				switch(term = get_line(buf, sizeof(buf), false)){
-					case UP:
-						history_backward(buf, sizeof(buf));
-						break;
-					case DOWN:
-						history_forward(buf, sizeof(buf));
-						break;
-					case TAB:
-						dprintf(STDERR_FILENO, "\nCompletion is not implemented.\n");
-						break;
-					case ENTER:
-						history_add(buf, false);
-						break;
-					case END:
-						exit(0);
-						break;
-				}
-			}while(term!=ENTER);
+		do{
+			dprintf(STDOUT_FILENO, "\r\x1b[K%s%s", prompt, buf);
+			switch(term = get_line(buf, sizeof(buf), false)){
+				case UP:
+					history_backward(buf, sizeof(buf));
+					break;
+				case DOWN:
+					history_forward(buf, sizeof(buf));
+					break;
+				case TAB:
+					dprintf(STDERR_FILENO, "\nCompletion is not implemented.\n");
+					break;
+				case ENTER:
+					history_add(buf, false);
+					break;
+				case END:
+					exit(0);
+					break;
+			}
+		}while(term!=ENTER);
 #else
-			dprintf(STDOUT_FILENO, "%s", prompt);
-			fgets(buf, sizeof(buf),stdin);
+		dprintf(STDOUT_FILENO, "%s", prompt);
+		fgets(buf, sizeof(buf),stdin);
 #endif
-			line(buf, NULL);
-		}
-		dprintf(STDOUT_FILENO, "exit\n");
+		line(buf, NULL, 0);
 	}
+	dprintf(STDOUT_FILENO, "exit\n");
+}
+
+void batch(char *fname){
+	FILE *fp;
+	char buf[BUF_SIZE]={0};
+
+	if(fp = fopen(fname, "r")){
+		while(fgets(buf, sizeof(buf), fp))
+			line(buf, NULL, 0);
+		fclose(fp);
+	}
+	else
+		perror(fname);
 }
 
 bool built_in(const char *cmd){
@@ -157,7 +152,7 @@ bool built_in(const char *cmd){
 	token = get_token(NULL);
 	unget_token();
 	if(token==STR || token==SQUART || token==DQUART)
-		factor(buf, NULL);
+		factor(buf, sizeof(buf), NULL);
 
 	if(!(strcmp(cmd, "fg")&&strcmp(cmd, "bg")&&strcmp(cmd, "stop"))){
 		job_id = atoi(buf);
@@ -169,7 +164,7 @@ bool built_in(const char *cmd){
 	}
 
 	if(!strcmp(cmd, "jobs")){
-		bg_task_for_each(task)
+		bg_task_for_each(bg_head, task)
 			dprintf(STDERR_FILENO, "[%d] %s\t\t%s\n", task->job_id, task->running ? "Running":"Stopped", task->cmd);
 		return true;
 	}
@@ -230,16 +225,17 @@ bool built_in(const char *cmd){
 		return true;
 	}
 	else if(!strcmp(cmd, "history")){
-		struct hist_cmd* hist;
-		int i = 0;
+		char *hist[BUF_SIZE];
+		int i, size_hist;
 
-		hist_cmd_for_each(hist)
-			dprintf(STDOUT_FILENO, "%d\t%s\n", ++i, hist->cmd);
+		size_hist = history_list(hist, sizeof(hist));
+		for(i=0; i<size_hist; i++)
+			dprintf(STDOUT_FILENO, "%d\t%s\n", i+1, hist[i]);
 
 		return true;
 	}
 	else if(!strcmp(cmd, "exit")){
-		if(!bg_task_isempty())
+		if(bg_task_entry_latest())
 			dprintf(STDERR_FILENO, "There are stopped jobs.\n");
 		else
 			exit(0);
@@ -273,54 +269,4 @@ bool built_in(const char *cmd){
 	}
 	
 	return false;
-}
-
-void sig_child(int signo){
-	int status;
-	pid_t pid;
-
-	//dprintf(STDERR_FILENO, "%s(%d)\n", __func__, signo);
-	while((pid = waitpid(-1, &status, WNOHANG))>0){
-		struct bg_task *task;
-
-		//dprintf(STDERR_FILENO, "pid:%d status:%d\n", pid, status);
-		if(task=bg_task_entry_bypid(pid)){
-			char *stat_msg = signal_status(status);
-
-			if(stat_msg){
-				dprintf(STDERR_FILENO, "\n[%d] %s\t\t%s\n", task->job_id, stat_msg, task->cmd);
-				bg_task_remove(task);
-			}
-		}
-	}
-}
-
-void wait_child(pid_t pid, int *p_status){
-	char *stat_msg;
-
-	waitpid(pid, p_status, WUNTRACED);
-
-	stat_msg = signal_status(*p_status);
-	if(!WIFEXITED(*p_status) && stat_msg)
-		dprintf(STDERR_FILENO, "%s\n", stat_msg);
-}
-
-char* signal_status(int status){
-	char *stat_msg = NULL;
-
-	if(WIFEXITED(status))
-		stat_msg = "Done";
-	else if(WIFSIGNALED(status))
-		switch(WTERMSIG(status)){
-			case SIGHUP:	stat_msg = "Hangup";		break;
-			case SIGINT:	stat_msg = "Interrupt";		break;
-			case SIGQUIT:	stat_msg = "Quit";		break;
-			case SIGABRT:	stat_msg = "Abort";		break;
-			case SIGKILL:	stat_msg = "Die Now";		break;
-			case SIGALRM:	stat_msg = "Alarm Clock";	break;
-			case SIGTERM:	stat_msg = "Terminated";	break;
-			default:	stat_msg = "Signal";
-		}
-
-	return stat_msg;
 }

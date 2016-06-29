@@ -5,6 +5,7 @@
 #include <fcntl.h>
 #include "include/parse.h"
 #include "include/bg_task.h"
+#include "include/signal.h"
 
 /*
 <line> ::= {<cmd> [';' | '||' | '&&' | '|' | '&']}* <cmd>
@@ -14,7 +15,7 @@
 
 char *ptr;
 
-void line(char *s_buf, char *d_buf){
+void line(char *s_buf, char *d_buf, size_t d_size){
 	int status;
 	bool cont;
 	pid_t cpid, cpgrp;
@@ -82,8 +83,8 @@ void line(char *s_buf, char *d_buf){
 
 	if(d_buf){
 		int len;
-		memset(d_buf, 0, BUF_SIZE);
-		read(STDIN_FILENO, d_buf, BUF_SIZE-1);
+		memset(d_buf, 0, d_size);
+		read(STDIN_FILENO, d_buf, d_size-1);
 
 		len = strlen(d_buf);
 		if(d_buf[len-1]=='\n')
@@ -127,7 +128,7 @@ pid_t command(void){
 	}
 
 	unget_token();
-	factor(buf, NULL);
+	factor(buf, sizeof(buf), NULL);
 	if(built_in(buf))
 		return 0;
 
@@ -143,7 +144,7 @@ pid_t command(void){
 			case STDOUT:
 			case APPEND:
 			case STDERR:
-				factor(NULL, NULL);
+				factor(NULL, 0, NULL);
 				break;
 			default:
 				unget_token();
@@ -181,7 +182,7 @@ pid_t command(void){
 	for(i=0, cont=true; cont;){
 		switch(get_token(NULL)){
 			case STDIN:
-				factor(buf, NULL);
+				factor(buf, sizeof(buf), NULL);
 				close(STDIN_FILENO);
 				if(open(buf, O_RDONLY)<0){
 					perror(buf);
@@ -190,7 +191,7 @@ pid_t command(void){
 				break;
 			case STDOUT:
 				close(STDOUT_FILENO);
-				if(factor(buf, &fd)==STR){
+				if(factor(buf, sizeof(buf), &fd)==STR){
 					unlink(buf);
 					if(open(buf, O_WRONLY | O_CREAT, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH)<0){
 						perror(buf);
@@ -202,7 +203,7 @@ pid_t command(void){
 				break;
 			case APPEND:
 				close(STDOUT_FILENO);
-				if(factor(buf, &fd)==STR){
+				if(factor(buf, sizeof(buf), &fd)==STR){
 					if(open(buf, O_WRONLY | O_CREAT | O_APPEND, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH)<0){
 						perror(buf);
 						_exit(-1);
@@ -213,7 +214,7 @@ pid_t command(void){
 				break;
 			case STDERR:
 				close(STDERR_FILENO);
-				if(factor(buf, &fd)==STR){
+				if(factor(buf, sizeof(buf), &fd)==STR){
 					unlink(buf);
 					if(open(buf, O_WRONLY | O_CREAT, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH)<0){
 						perror(buf);
@@ -227,12 +228,12 @@ pid_t command(void){
 			case SQUART:
 			case DQUART:
 				unget_token();
-				factor(buf, NULL);
+				factor(buf, sizeof(buf), NULL);
 				argv[i++]=strdup(buf);
 				break;
 			case BQUART:
 				unget_token();
-				factor(buf, NULL);
+				factor(buf, sizeof(buf), NULL);
 
 				for(p=buf; *p; p++)
 					if(*p=='\n') argc++;
@@ -266,7 +267,7 @@ pid_t command(void){
 	_exit(-1);
 }
 
-int factor(char *p, int *v){
+int factor(char *p, size_t p_size, int *v){
 	char c;
 	int i;
 	char *b_ptr;
@@ -280,24 +281,24 @@ int factor(char *p, int *v){
 			break;
 		case STR:
 			unget_token();
-			for(i=0; i<BUF_SIZE-1 && get_token(&c)==STR; i++)
+			for(i=0; i<p_size-1 && get_token(&c)==STR; i++)
 				if(p)
 					*(p++)=c;
 			unget_token();
 			break;
 		case SQUART:
-			for(i=0; i<BUF_SIZE-1 && get_token(&c)!=SQUART; i++)
+			for(i=0; i<p_size-1 && get_token(&c)!=SQUART; i++)
 				if(p)
 					*(p++)=c;
 			break;
 		case DQUART:
-			for(i=0; i<BUF_SIZE-1 && get_token(&c)!=DQUART; i++)
+			for(i=0; i<p_size-1 && get_token(&c)!=DQUART; i++)
 				if(p){
 					if(c=='`'){
 						unget_token();
-						factor(buf, NULL);
+						factor(buf, sizeof(buf), NULL);
 
-						strncpy(p, buf, BUF_SIZE-i);
+						strncpy(p, buf, p_size-i);
 						p += strlen(p);
 					}
 					else
@@ -312,16 +313,16 @@ int factor(char *p, int *v){
 
 			if(p){
 				b_ptr = ptr;
-				line(buf, p);
+				line(buf, p, p_size);
 				ptr = b_ptr;
 			}
 			return STR;
 		case FD:
 			b_ptr = ptr;
-			for(i=0; i<BUF_SIZE && get_token(&c)==STR; i++)
+			for(i=0; i<p_size && get_token(&c)==STR; i++)
 				if(c<'0' || c>'9'){
 					ptr = b_ptr;
-					factor(p, NULL);
+					factor(p, p_size, NULL);
 					return -1;
 				}
 			unget_token();

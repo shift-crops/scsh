@@ -3,8 +3,8 @@
 
 #include "common.h"
 
-#define bg_task_for_each(p)	for(p=bg_head.next; p!=&bg_head; p=p->next)
-#define bg_task_isempty()	(bg_head.next==&bg_head)
+#define bg_task_for_each(head, p)	for(p=head.next; p!=&head; p=p->next)
+#define bg_task_isempty(head)		(head.next==&head)
 
 struct bg_task{
 	int job_id;

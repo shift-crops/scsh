@@ -3,8 +3,6 @@
 
 #include "common.h"
 
-#define BACKUP_FILENO	255
-
 #define SPACE		0b00000
 
 #define STR		0b00010
@@ -28,9 +26,9 @@
 
 #define EOL		0b11111
 
-void line(char *, char *);
+void line(char *, char *, size_t);
 pid_t command(void);
-int factor(char *, int *);
+int factor(char *, size_t, int *);
 char get_token(char *);
 void unget_token(void);
 void error(const char *);

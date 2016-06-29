@@ -3,7 +3,7 @@
 #include <string.h>
 #include "include/history.h"
 
-struct hist_cmd *hist_ptr;
+struct hist_cmd hist_head, *hist_ptr;
 char hist_file[BUF_SIZE];
 
 void history_init(char *fname){
@@ -22,7 +22,7 @@ void history_fini(void){
 
 	history_save(hist_file);
 
-	hist_cmd_for_each(p)
+	hist_cmd_for_each(hist_head, p)
 		if(p->prev!=&hist_head){
 			free(p->prev->cmd);
 			p->prev->cmd = NULL;
@@ -52,7 +52,7 @@ void history_save(char *fname){
 	if((fp = fopen(fname, "a"))==NULL)
 		return;
 
-	hist_cmd_for_each(hist)
+	hist_cmd_for_each(hist_head, hist)
 		if(!hist->saved)
 			fprintf(fp, "%s\n", hist->cmd);
 
@@ -95,4 +95,17 @@ void history_forward(char *buf, size_t size){
 		buf[0]='\0';
 	else if(hist_ptr->cmd)
 		strncpy(buf, hist_ptr->cmd, size);
+}
+
+int history_list(char *cmd[], int max){
+	struct hist_cmd* hist;
+	int i = 0;
+
+	hist_cmd_for_each(hist_head, hist)
+		if(i<max)
+			cmd[i++]=hist->cmd;
+		else
+			break;
+
+	return i;
 }
