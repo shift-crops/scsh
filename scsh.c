@@ -8,6 +8,7 @@
 #include "include/scsh.h"
 #include "include/signal.h"
 #include "include/input.h"
+#include "include/complete.h"
 #include "include/parse.h"
 #include "include/bg_task.h"
 #include "include/history.h"
@@ -37,7 +38,7 @@ fini(){
 
 int main(int argc, char *argv[]){
 	char opt;
-	char *msg = "scsh, version %s (Compiled at %s %s)\n", *version="1.02";
+	char *msg = "scsh, version %s (Compiled at %s %s)\n", *version="2.00";
 
 	struct option long_options[] = {
 	        {"help",     no_argument, NULL, 'h'},
@@ -99,12 +100,13 @@ void shell(void){
 
 	while(true){
 		char buf[BUF_SIZE]={0}, prompt[BUF_SIZE], term;
+		int pos;
 
 		snprintf(prompt, sizeof(prompt), "%s@%s:%s%c ", user, host, cwd, p);
 #ifdef CURSOL
 		do{
 			dprintf(STDOUT_FILENO, "\r\x1b[K%s%s", prompt, buf);
-			switch(term = get_line(buf, sizeof(buf), false)){
+			switch(term = get_line(buf, sizeof(buf), false, &pos)){
 				case UP:
 					history_backward(buf, sizeof(buf));
 					break;
@@ -112,7 +114,7 @@ void shell(void){
 					history_forward(buf, sizeof(buf));
 					break;
 				case TAB:
-					dprintf(STDERR_FILENO, "\nCompletion is not implemented.\n");
+					completion(pos, buf, sizeof(buf));
 					break;
 				case ENTER:
 					history_add(buf, false);

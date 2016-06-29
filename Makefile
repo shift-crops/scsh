@@ -1,5 +1,5 @@
-scsh: scsh.o signal.o input.o parse.o bg_task.o history.o
-	gcc scsh.o signal.o input.o parse.o bg_task.o history.o -o scsh
+scsh: scsh.o signal.o input.o complete.o parse.o bg_task.o history.o
+	gcc scsh.o signal.o input.o complete.o parse.o bg_task.o history.o -o scsh
 
 all:
 	make clean
@@ -13,6 +13,9 @@ signal.o: signal.c
 
 input.o: input.c
 	gcc -c input.c
+
+complete.o: complete.c
+	gcc -c complete.c
 
 parse.o: parse.c
 	gcc -c parse.c

@@ -14,7 +14,7 @@ void input_init(void){
 	io_conf.c_cc[VTIME]	 = 0;
 }
 
-char get_line(char *buf, size_t size, bool reset){
+char get_line(char *buf, size_t size, bool reset, int *position){
 	int idx;
 	char term;
 
@@ -73,6 +73,9 @@ char get_line(char *buf, size_t size, bool reset){
 				break;
 		}
 	}
+
+	if(position)
+		*position = idx;
 
 	tcsetattr(STDIN_FILENO, TCSAFLUSH, &b_io_conf);
 	return term;

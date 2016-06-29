@@ -28,7 +28,7 @@
 #define LETR			0b1100
 #define END			0b1111
 
-char get_line(char *, size_t, bool);
+char get_line(char *, size_t, bool, int*);
 char get_term(void);
 char keycode(char *);
 
