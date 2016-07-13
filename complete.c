@@ -4,7 +4,10 @@
 #include <string.h>
 #include <limits.h>
 #include <dirent.h>
+#include <sys/ioctl.h>
 #include "include/complete.h"
+
+#define MIN_SPACE 16
 
 void completion(int pos, char *line, size_t line_size){
 	char *remain, *p;
@@ -59,27 +62,62 @@ bool search(char *line, size_t line_size){
 		free(env_path);
 	}
 
-	if(count==1){
-		if(p = strrchr(line, '/'))	p++;
-		else				p = line;
+	if(!count)
+		return false;
 
+
+	if(p = strrchr(line, '/'))	p++;
+	else				p = line;
+
+	if(count==1){
 		strncpy(p, files[0], line_size-(p-line));
 		free(files[0]);
-		free(files);
-		return true;
 	}
-	else if(count){
-		int i;
+	else{
+		struct winsize ws;
+		int line_n, max_len;
+		char format[8];
 
+		strncpy(buf, files[0], sizeof(buf));
+		max_len = 0;
 		for(i=0; i<count; i++){
-			dprintf(STDERR_FILENO, i%5 ? "%-32s" : "\n%-32s", files[i]);
-			free(files[i]);
+			int match_n;
+
+			match_n = strmatch(buf, files[i]);
+			buf[match_n]='\0';
+
+			if(strlen(files[i])>max_len)
+				max_len = strlen(files[i]);
 		}
-		dprintf(STDERR_FILENO, "\n");
-		free(files);
+
+		/*
+		printf("p: %s\tbuf:%s\n", p, buf);
+		for(i=0; i<count; i++)
+			printf("%02d: %s\n", i, files[i]);
+		*/
+
+		if(strlen(buf) && strcmp(p, buf))
+			strncpy(p, buf, line_size-(p-line));
+		else{
+			int length;
+
+			length = max_len + (8-max_len%8);
+			if(length < MIN_SPACE)
+				length = MIN_SPACE;
+
+			snprintf(format, sizeof(format), "\n%%-%ds", length);
+			line_n = (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws)!=-1 && ws.ws_col > 0) ? ws.ws_col/length : 1;
+
+			for(i=0; i<count; i++){
+				dprintf(STDERR_FILENO, format+(i%line_n ? 1 : 0), files[i]);
+				free(files[i]);
+			}
+			dprintf(STDERR_FILENO, "\n");
+		}
 	}
 
-	return false;
+	free(files);
+	return true;
 }
 
 int candidate(char **files[], int nfile, char *path, char *piece){
@@ -88,7 +126,7 @@ int candidate(char **files[], int nfile, char *path, char *piece){
 	long loc;
 	int count, i;
 
-	//dprintf(STDERR_FILENO, "[file:%s,\tpath:%s]\n", piece, path);
+	//dprintf(STDERR_FILENO, "\n[file:%s,\tpath:%s]\n", piece, path);
 
 	if(!(dir = opendir(path)))
 		return 0;
@@ -111,4 +149,13 @@ int candidate(char **files[], int nfile, char *path, char *piece){
 	closedir(dir);
 
 	return nfile+count;
+}
+
+int strmatch(char *a, char *b){
+	int i;
+
+	for(i=0; a[i]&&b[i]; i++)
+		if(a[i]^b[i])	break;
+
+	return i;
 }

@@ -38,7 +38,7 @@ fini(){
 
 int main(int argc, char *argv[]){
 	char opt;
-	char *msg = "scsh, version %s (Compiled at %s %s)\n", *version="2.00";
+	char *msg = "scsh, version %s (Compiled at %s %s)\n", *version="2.01";
 
 	struct option long_options[] = {
 	        {"help",     no_argument, NULL, 'h'},
