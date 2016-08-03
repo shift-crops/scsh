@@ -3,6 +3,7 @@
 
 #include "common.h"
 
+#define KEY			0x5b1b
 #define KEY_UP			0x00415b1b
 #define KEY_DOWN		0x00425b1b
 #define KEY_RIGHT		0x00435b1b

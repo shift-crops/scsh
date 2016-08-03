@@ -122,6 +122,21 @@ char keycode(char *letter){
 					return LEFT;
 				case KEY_DEL:
 					return DEL;
+				case KEY:
+					key = 0;
+					if(read(STDIN_FILENO, &key, 1)<1)
+						return END;
+
+					switch(key){
+						case 'A':
+							return UP;
+						case 'B':
+							return DOWN;
+						case 'C':
+							return RIGHT;
+						case 'D':
+							return LEFT;
+					}
 				default:
 					dprintf(STDOUT_FILENO, "Undefined ESC key : 0x%x\n", key);
 			}
